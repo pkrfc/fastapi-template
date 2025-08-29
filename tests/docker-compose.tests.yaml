@@ -1,0 +1,73 @@
+x-app-base: &app_base
+  build:
+    context: ../
+    dockerfile: Dockerfile
+    target: app
+  image: fastapi-template:latest
+  environment:
+    - PYTHONUNBUFFERED=1
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+    interval: 5s
+    timeout: 3s
+    retries: 10
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: app_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "6379:6379"
+
+  service:
+    <<: *app_base
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/app_db
+      - REDIS_URL=redis://redis:6379/0
+
+  tasks:
+    <<: *app_base
+    depends_on:
+      service:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/app_db
+      - REDIS_URL=redis://redis:6379/0
+    entrypoint: ["sh", "-c", "uv run taskiq worker src.tasks:broker & uv run taskiq scheduler src.tasks:scheduler"]
+
+  tests:
+    build:
+      context: ../
+      dockerfile: Dockerfile
+      target: tests
+    depends_on:
+      service:
+        condition: service_healthy
+    working_dir: /project
+    environment:
+      - PYTHONUNBUFFERED=1
